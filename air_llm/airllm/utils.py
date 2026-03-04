@@ -72,14 +72,30 @@ class NotEnoughSpaceException(Exception):
     pass
 
 # Function to clean RAM & vRAM
-def clean_memory():
+def clean_memory(device: str = None):
     gc.collect()
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as ex:
         # maybe platform
         pass
-    torch.cuda.empty_cache()
+
+    if device is not None and device.startswith("xpu"):
+        try:
+            torch.xpu.empty_cache()
+        except Exception:
+            pass
+    elif device is not None and device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    else:
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.xpu.empty_cache()
+        except Exception:
+            pass
 
 
 def uncompress_layer_state_dict(layer_state_dict):

@@ -40,6 +40,11 @@ setuptools.setup(
     cmdclass={
         'install': PostInstallCommand,
     },
+    entry_points={
+        'console_scripts': [
+            'airllm-chat=airllm.chat:main',
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

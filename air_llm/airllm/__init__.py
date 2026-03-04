@@ -21,4 +21,4 @@ else:
     from .auto_model import AutoModel
     from .utils import split_and_save_layers
     from .utils import NotEnoughSpaceException
-
+    from .memory_utils import get_available_memory_gb, get_avg_layer_size_gb, suggest_num_layers, confirm_num_layers
