@@ -98,19 +98,28 @@ def clean_memory(device: str = None):
             pass
 
 
-def uncompress_layer_state_dict(layer_state_dict):
+def uncompress_layer_state_dict(layer_state_dict, device: str = "cuda"):
+    has_4bit = any('4bit' in k for k in layer_state_dict.keys())
+    has_8bit = any('8bit' in k for k in layer_state_dict.keys())
+
+    if (has_4bit or has_8bit) and device.startswith("xpu"):
+        raise RuntimeError(
+            "Compression (4bit/8bit) is not supported on Intel XPU devices. "
+            "bitsandbytes requires CUDA. Use compression=None with XPU devices."
+        )
+
     uncompressed_layer_state_dict = None
-    if any(['4bit' in k for k in layer_state_dict.keys()]):
+    if has_4bit:
         uncompressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():
             if '4bit' not in k:
                 quant_state_dict = {kk[len(k):]: kv for kk, kv in layer_state_dict.items() if kk.startswith(k) and k != kk}
-                quant_state = bnb.functional.QuantState.from_dict(qs_dict=quant_state_dict, device="cuda")
+                quant_state = bnb.functional.QuantState.from_dict(qs_dict=quant_state_dict, device=device)
 
-                dqv = bnb.functional.dequantize_nf4(v.cuda(), quant_state)
+                dqv = bnb.functional.dequantize_nf4(v.to(device), quant_state)
                 uncompressed_layer_state_dict[k] = dqv
         del layer_state_dict
-    elif any(['8bit' in k for k in layer_state_dict.keys()]):
+    elif has_8bit:
         uncompressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():
             if '8bit' not in k:
@@ -118,9 +127,9 @@ def uncompress_layer_state_dict(layer_state_dict):
                 absmax = layer_state_dict[k + ".8bit.absmax"]
                 code = layer_state_dict[k + ".8bit.code"]
 
-                dqv = bnb.functional.dequantize_blockwise(v.cuda(),
-                                                          bnb.functional.QuantState(absmax=absmax.cuda(),
-                                                                                    code=code.cuda(),
+                dqv = bnb.functional.dequantize_blockwise(v.to(device),
+                                                          bnb.functional.QuantState(absmax=absmax.to(device),
+                                                                                    code=code.to(device),
                                                                                     blocksize=2048,
                                                                                     dtype=torch.float16))
                 uncompressed_layer_state_dict[k] = dqv
@@ -128,14 +137,14 @@ def uncompress_layer_state_dict(layer_state_dict):
 
     return layer_state_dict if uncompressed_layer_state_dict is None else uncompressed_layer_state_dict
 
-def load_layer(local_path, layer_name, profiling=False):
+def load_layer(local_path, layer_name, profiling=False, device="cpu"):
     #layer_state_dict = load_file(Path(local_path) / (layer_name + ".safetensors"), device="cpu")
     layer_state_dict = ModelPersister.get_model_persister().load_model(layer_name, local_path)
 
     if profiling:
         t = time.process_time()
 
-    to_return = uncompress_layer_state_dict(layer_state_dict)
+    to_return = uncompress_layer_state_dict(layer_state_dict, device=device)
 
     #clean_memory()
 

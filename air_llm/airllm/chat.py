@@ -1,4 +1,7 @@
 from getpass import getpass
+import os
+import sys
+from threading import Thread
 
 import torch
 
@@ -8,6 +11,12 @@ try:
 except ImportError:
     from airllm.auto_model import AutoModel
     from airllm.memory_utils import get_available_memory_gb, get_avg_layer_size_gb, suggest_num_layers, confirm_num_layers
+
+try:
+    from transformers import TextIteratorStreamer
+    STREAMING_AVAILABLE = True
+except ImportError:
+    STREAMING_AVAILABLE = False
 
 
 MAX_LENGTH = 512
@@ -19,6 +28,23 @@ def _default_device() -> str:
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         return "cuda:0"
     return "cpu"
+
+
+def _estimate_model_path(model_id: str) -> str:
+    """Try to find a local cache path for the model. Falls back to model_id as-is."""
+    if os.path.exists(model_id):
+        return model_id
+    try:
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        model_dir_name = "models--" + model_id.replace("/", "--")
+        snapshots_dir = os.path.join(cache_dir, model_dir_name, "snapshots")
+        if os.path.exists(snapshots_dir):
+            snapshots = sorted(os.listdir(snapshots_dir))
+            if snapshots:
+                return os.path.join(snapshots_dir, snapshots[-1])
+    except Exception:
+        pass
+    return model_id
 
 
 def main():
@@ -41,18 +67,29 @@ def main():
             hf_token = getpass("HuggingFace 토큰 입력: ").strip() or None
 
         device = _default_device()
+        estimated_path = _estimate_model_path(model_id)
         available = get_available_memory_gb(device)
-        avg_size = get_avg_layer_size_gb(model_id)
-        suggested = suggest_num_layers(model_id, device)
+        avg_size = get_avg_layer_size_gb(estimated_path)
+        suggested = suggest_num_layers(estimated_path, device)
         num_layers = confirm_num_layers(suggested, available, avg_size, safety_margin_gb=2.0)
 
         print("모델을 로딩 중입니다. 처음 실행 시 레이어 분할 저장으로 수 분이 걸릴 수 있습니다.")
-        model = AutoModel.from_pretrained(
-            model_id,
-            device=device,
-            hf_token=hf_token,
-            num_layers_in_memory=num_layers,
-        )
+        try:
+            model = AutoModel.from_pretrained(
+                model_id,
+                device=device,
+                hf_token=hf_token,
+                num_layers_in_memory=num_layers,
+            )
+        except (ImportError, ModuleNotFoundError, RuntimeError, OSError) as e:
+            print(f"\n오류가 발생했습니다: {e}")
+            print("\n문제해결 도우미를 실행합니다...\n")
+            try:
+                from .diagnostics import run_diagnostics
+            except ImportError:
+                from airllm.diagnostics import run_diagnostics
+            run_diagnostics(device=device)
+            sys.exit(1)
 
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("모델 로딩 완료. 채팅을 시작합니다.")
@@ -75,7 +112,6 @@ def main():
                 break
 
             try:
-                print("생성 중...", end="\r", flush=True)
                 input_tokens = model.tokenizer(
                     [user_input],
                     return_tensors="pt",
@@ -87,26 +123,71 @@ def main():
                 input_ids = input_tokens["input_ids"].to(model.running_device)
                 input_length = input_ids.shape[1]
 
-                generation_output = model.generate(
-                    input_ids,
-                    max_new_tokens=512,
-                    use_cache=True,
-                    return_dict_in_generate=True,
-                )
+                if STREAMING_AVAILABLE:
+                    # Streaming path
+                    streamer = TextIteratorStreamer(
+                        model.tokenizer,
+                        skip_prompt=True,
+                        skip_special_tokens=True,
+                    )
+                    generate_kwargs = dict(
+                        input_ids=input_ids,
+                        max_new_tokens=512,
+                        use_cache=True,
+                        streamer=streamer,
+                    )
+                    thread = Thread(target=model.generate, kwargs=generate_kwargs)
+                    thread.start()
 
-                print(" " * 20, end="\r", flush=True)
-                if not hasattr(generation_output, "sequences") or len(generation_output.sequences) == 0:
-                    print("Assistant: (빈 응답)")
-                    continue
+                    print("Assistant: ", end="", flush=True)
+                    generated_any = False
+                    try:
+                        for token_text in streamer:
+                            print(token_text, end="", flush=True)
+                            generated_any = True
+                    except KeyboardInterrupt:
+                        print("\n[생성 중단]")
+                    finally:
+                        thread.join(timeout=5)
+                    if not generated_any:
+                        print("(빈 응답)", end="")
+                    print()
+                else:
+                    # Non-streaming fallback
+                    print("생성 중...", end="\r", flush=True)
+                    generation_output = model.generate(
+                        input_ids,
+                        max_new_tokens=512,
+                        use_cache=True,
+                        return_dict_in_generate=True,
+                    )
 
-                output_ids = generation_output.sequences[0][input_length:]
-                response = model.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-                print(f"Assistant: {response if response else '(빈 응답)'}")
+                    print(" " * 20, end="\r", flush=True)
+                    if not hasattr(generation_output, "sequences") or len(generation_output.sequences) == 0:
+                        print("Assistant: (빈 응답)")
+                        continue
+
+                    output_ids = generation_output.sequences[0][input_length:]
+                    response = model.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+                    print(f"Assistant: {response if response else '(빈 응답)'}")
+
             except KeyboardInterrupt:
                 print("\n대화를 종료합니다.")
                 break
             except Exception as e:
-                print(f"오류가 발생했습니다: {e}")
+                # Check for OutOfMemoryError (torch.OutOfMemoryError is PyTorch 2.0+)
+                oom_type = getattr(torch, "OutOfMemoryError", None)
+                if oom_type is not None and isinstance(e, oom_type):
+                    print(f"\n메모리 부족 오류가 발생했습니다.")
+                    print("문제해결 도우미를 실행합니다...\n")
+                    try:
+                        from .diagnostics import run_diagnostics
+                    except ImportError:
+                        from airllm.diagnostics import run_diagnostics
+                    run_diagnostics(device=model.running_device)
+                    print("\n힌트: num_layers_in_memory를 줄이거나 더 작은 모델을 사용하세요.")
+                else:
+                    print(f"오류가 발생했습니다: {e}")
                 continue
     except KeyboardInterrupt:
         print("\n대화를 종료합니다.")
