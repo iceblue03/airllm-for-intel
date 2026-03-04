@@ -9,7 +9,7 @@ class LayeredProfiler:
         self.min_free_mem = 1024*1024*1024*1024
 
 
-    def add_profiling_time(self, item, time):
+    def add_profiling_time(self, item, time, device: str = None):
 
         if not item in self.profiling_time_dict:
             self.profiling_time_dict[item] = []
@@ -17,7 +17,17 @@ class LayeredProfiler:
         self.profiling_time_dict[item].append(time)
 
         if self.print_memory:
-            free_mem = torch.cuda.mem_get_info()[0]
+            free_mem = None
+            if device is not None and device.startswith("xpu"):
+                try:
+                    free_mem = torch.xpu.memory_reserved(device) - torch.xpu.memory_allocated(device)
+                except Exception:
+                    free_mem = 0
+            else:
+                try:
+                    free_mem = torch.cuda.mem_get_info()[0]
+                except Exception:
+                    free_mem = 0
             self.min_free_mem = min(self.min_free_mem, free_mem)
             print(f"free vmem @{item}: {free_mem/1024/1024/1024:.02f}GB, min free: {self.min_free_mem/1024/1024/1024:.02f}GB")
 
@@ -28,4 +38,3 @@ class LayeredProfiler:
     def print_profiling_time(self):
         for item in self.profiling_time_dict.keys():
             print(f"total time for {item}: {sum(self.profiling_time_dict[item])}")
-

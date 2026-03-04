@@ -81,6 +81,8 @@ class AirLLMBaseModel(GenerationMixin):
             setting to '4bit' or '8bit' to enable compression from 16 bits to 4 bits/8 bits which speeed up 4x or 2x inference time with a tiny accuracy loss.
         hf_token: str, optional
             huggingface api token could be provided, by default None
+        num_layers_in_memory : int or str, optional
+            Number of layers to keep in memory at once. Use "auto" for interactive terminal confirmation based on detected memory.
         """
 
 
@@ -101,17 +103,6 @@ class AirLLMBaseModel(GenerationMixin):
         self.compression = compression
         self.hf_token = hf_token
 
-        if num_layers_in_memory < 1:
-            raise ValueError(f"num_layers_in_memory must be >= 1, got {num_layers_in_memory}")
-
-        if num_layers_in_memory > 1 and compression is not None:
-            warnings.warn(
-                "num_layers_in_memory > 1 is not supported with compression. Forcing num_layers_in_memory=1."
-            )
-            num_layers_in_memory = 1
-
-        self.num_layers_in_memory = num_layers_in_memory
-
         # Save parameters
 
         self.set_layer_names_dict()
@@ -124,6 +115,28 @@ class AirLLMBaseModel(GenerationMixin):
                                                                                          hf_token=hf_token,
                                                                                          delete_original=delete_original)
         self.running_device = device
+
+        if isinstance(num_layers_in_memory, str):
+            if num_layers_in_memory == "auto":
+                from .memory_utils import suggest_num_layers, confirm_num_layers, get_available_memory_gb, get_avg_layer_size_gb
+                available = get_available_memory_gb(device)
+                avg_size = get_avg_layer_size_gb(self.checkpoint_path)
+                suggested = suggest_num_layers(self.checkpoint_path, device)
+                num_layers_in_memory = confirm_num_layers(suggested, available, avg_size, safety_margin_gb=2.0)
+            else:
+                raise ValueError(f"num_layers_in_memory must be a positive integer or 'auto', got '{num_layers_in_memory}'")
+
+        if num_layers_in_memory < 1:
+            raise ValueError(f"num_layers_in_memory must be >= 1, got {num_layers_in_memory}")
+
+        if num_layers_in_memory > 1 and compression is not None:
+            warnings.warn(
+                "num_layers_in_memory > 1 is not supported with compression. Forcing num_layers_in_memory=1."
+            )
+            num_layers_in_memory = 1
+
+        self.num_layers_in_memory = num_layers_in_memory
+
         self.device = torch.device(self.running_device)
         self.running_dtype = dtype
         self.dtype = self.running_dtype
@@ -203,7 +216,7 @@ class AirLLMBaseModel(GenerationMixin):
                     self.model = BetterTransformer.transform(self.model)  # enable flash attention
             except ValueError as ve:
                 del self.model
-                clean_memory()
+                clean_memory(self.running_device)
                 self.model = None
 
             if self.model is None:
@@ -219,7 +232,7 @@ class AirLLMBaseModel(GenerationMixin):
 
                 except TypeError as ve:
                     del self.model
-                    clean_memory()
+                    clean_memory(self.running_device)
                     self.model = None
 
         # fallback to original way
@@ -289,9 +302,9 @@ class AirLLMBaseModel(GenerationMixin):
             state_dict, compression_time = load_layer_output
             disk_loading_time = elapsed_time - compression_time
 
-            self.profiler.add_profiling_time('load_safe_tensor', disk_loading_time)
+            self.profiler.add_profiling_time('load_safe_tensor', disk_loading_time, device=self.running_device)
 
-            self.profiler.add_profiling_time('compression_time', compression_time)
+            self.profiler.add_profiling_time('compression_time', compression_time, device=self.running_device)
         else:
             state_dict = load_layer_output
 
@@ -307,7 +320,7 @@ class AirLLMBaseModel(GenerationMixin):
 
             elapsed_time = time.time() - t
             if self.profiling_mode:
-                self.profiler.add_profiling_time('pin_memory_to_trigger_load', elapsed_time)
+                self.profiler.add_profiling_time('pin_memory_to_trigger_load', elapsed_time, device=self.running_device)
 
         return state_dict
 
@@ -431,7 +444,7 @@ class AirLLMBaseModel(GenerationMixin):
 
         # Reboot the model to make sure buffers are loaded and memory is clean
         del self.model
-        clean_memory()
+        clean_memory(self.running_device)
         self.init_model()
 
         batch = [input_ids_unit.to(self.running_device).unsqueeze(0) for input_ids_unit in input_ids]
@@ -462,8 +475,10 @@ class AirLLMBaseModel(GenerationMixin):
                 future = executor.submit(self.load_layer_to_cpu, self.layer_names[0])
 
 
+            num_groups = (num_total_layers + group_size - 1) // group_size
             for group_start in tqdm(range(0, num_total_layers, group_size),
-                                               desc=f'running layers({self.running_device})'):
+                                               desc=f'running layers({self.running_device})',
+                                               total=num_groups):
 
                 group_end = min(group_start + group_size, num_total_layers)
 
@@ -480,7 +495,7 @@ class AirLLMBaseModel(GenerationMixin):
                         #torch.cuda.current_stream().wait_stream(self.stream)
                         if self.profiling_mode:
                             elapsed_time = time.time() - t
-                            self.profiler.add_profiling_time('load_safe_tensor_cpu_wait', elapsed_time)
+                            self.profiler.add_profiling_time('load_safe_tensor_cpu_wait', elapsed_time, device=self.running_device)
 
                         #for param_name, param in state_dict.items():
                         #    state_dict[param_name] = param.to('cuda', non_blocking=True)
@@ -490,7 +505,7 @@ class AirLLMBaseModel(GenerationMixin):
                         moved_layers = self.move_layer_to_device(state_dict)
                         if self.profiling_mode:
                             elapsed_time = time.time() - t
-                            self.profiler.add_profiling_time('create_layer_from_state_dict', elapsed_time)
+                            self.profiler.add_profiling_time('create_layer_from_state_dict', elapsed_time, device=self.running_device)
 
                         # kick off next layer loading
 
@@ -505,7 +520,7 @@ class AirLLMBaseModel(GenerationMixin):
 
                             if self.profiling_mode:
                                 elapsed_time = time.time() - t
-                                self.profiler.add_profiling_time('kick_off_load_cpu', elapsed_time)
+                                self.profiler.add_profiling_time('kick_off_load_cpu', elapsed_time, device=self.running_device)
 
                     else:
                         state_dict = self.load_layer_to_cpu(layer_name)
@@ -514,7 +529,7 @@ class AirLLMBaseModel(GenerationMixin):
                         moved_layers = self.move_layer_to_device(state_dict)
                         if self.profiling_mode:
                             elapsed_time = time.time() - t
-                            self.profiler.add_profiling_time('create_layer_from_safe_tensor', elapsed_time)
+                            self.profiler.add_profiling_time('create_layer_from_safe_tensor', elapsed_time, device=self.running_device)
 
                     group_moved_layers.append(moved_layers)
 
@@ -628,9 +643,7 @@ class AirLLMBaseModel(GenerationMixin):
                             set_module_tensor_to_device(self.model, param_name,'meta')
                     else:
                         layer.to("meta")
-
-                    layer.to("meta")
-                clean_memory()  # proposed by CPMP
+                clean_memory(self.running_device)  # proposed by CPMP
 
         logits = torch.cat(batch, 0)
         if use_cache:

@@ -92,6 +92,14 @@ def _import_base_class(mock_modules):
         sys.modules['airllm.utils'] = utils_mod
         airllm_pkg.utils = utils_mod
 
+        memory_utils_mod = types.ModuleType('airllm.memory_utils')
+        memory_utils_mod.suggest_num_layers = MagicMock(return_value=3)
+        memory_utils_mod.confirm_num_layers = MagicMock(return_value=3)
+        memory_utils_mod.get_available_memory_gb = MagicMock(return_value=8.0)
+        memory_utils_mod.get_avg_layer_size_gb = MagicMock(return_value=1.5)
+        sys.modules['airllm.memory_utils'] = memory_utils_mod
+        airllm_pkg.memory_utils = memory_utils_mod
+
         spec = importlib.util.spec_from_file_location(
             "airllm.airllm_base",
             "/home/runner/work/airllm-for-intel/airllm-for-intel/air_llm/airllm/airllm_base.py",
@@ -131,6 +139,18 @@ class TestNumLayersInMemoryValidation(unittest.TestCase):
         orig_get_tokenizer = cls.get_tokenizer
 
         try:
+            if 'airllm' not in sys.modules:
+                airllm_pkg = types.ModuleType('airllm')
+                airllm_pkg.__path__ = ['/home/runner/work/airllm-for-intel/airllm-for-intel/air_llm/airllm']
+                sys.modules['airllm'] = airllm_pkg
+            if 'airllm.memory_utils' not in sys.modules:
+                memory_utils_mod = types.ModuleType('airllm.memory_utils')
+                memory_utils_mod.suggest_num_layers = MagicMock(return_value=3)
+                memory_utils_mod.confirm_num_layers = MagicMock(return_value=3)
+                memory_utils_mod.get_available_memory_gb = MagicMock(return_value=8.0)
+                memory_utils_mod.get_avg_layer_size_gb = MagicMock(return_value=1.5)
+                sys.modules['airllm.memory_utils'] = memory_utils_mod
+
             def mock_init_model(self_):
                 # Simulate model with nested structure for layer counting
                 mock_layer = MagicMock()
@@ -192,6 +212,14 @@ class TestNumLayersInMemoryValidation(unittest.TestCase):
             instance = self._create_instance(num_layers_in_memory=4, compression='4bit')
             self.assertEqual(instance.num_layers_in_memory, 1)
             self.assertTrue(any("num_layers_in_memory" in str(warning.message) for warning in w))
+
+    def test_num_layers_in_memory_auto_sets_suggested_value(self):
+        instance = self._create_instance(num_layers_in_memory='auto')
+        self.assertEqual(instance.num_layers_in_memory, 3)
+
+    def test_num_layers_in_memory_invalid_string_raises(self):
+        with self.assertRaises(ValueError):
+            self._create_instance(num_layers_in_memory='invalid')
 
     def test_num_layers_in_memory_1_with_compression_no_warning(self):
         with warnings.catch_warnings(record=True) as w:
