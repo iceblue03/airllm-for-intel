@@ -97,6 +97,8 @@ def _import_base_class(mock_modules):
         memory_utils_mod.confirm_num_layers = MagicMock(return_value=3)
         memory_utils_mod.get_available_memory_gb = MagicMock(return_value=8.0)
         memory_utils_mod.get_avg_layer_size_gb = MagicMock(return_value=1.5)
+        memory_utils_mod.calculate_min_required_memory_gb = MagicMock(return_value=2.0)
+        memory_utils_mod.check_memory_and_confirm = MagicMock(return_value=True)
         sys.modules['airllm.memory_utils'] = memory_utils_mod
         airllm_pkg.memory_utils = memory_utils_mod
 
@@ -149,6 +151,8 @@ class TestNumLayersInMemoryValidation(unittest.TestCase):
                 memory_utils_mod.confirm_num_layers = MagicMock(return_value=3)
                 memory_utils_mod.get_available_memory_gb = MagicMock(return_value=8.0)
                 memory_utils_mod.get_avg_layer_size_gb = MagicMock(return_value=1.5)
+                memory_utils_mod.calculate_min_required_memory_gb = MagicMock(return_value=2.0)
+                memory_utils_mod.check_memory_and_confirm = MagicMock(return_value=True)
                 sys.modules['airllm.memory_utils'] = memory_utils_mod
 
             def mock_init_model(self_):
