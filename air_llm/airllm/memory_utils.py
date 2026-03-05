@@ -28,12 +28,23 @@ def get_available_memory_gb(device: str) -> float:
 
         if device.startswith("xpu"):
             try:
-                free_mem = torch.xpu.memory_reserved(device) - torch.xpu.memory_allocated(device)
-                return float(free_mem) / (1024 ** 3)
+                import intel_extension_for_pytorch as ipex  # noqa: F401
+                device_idx = _parse_device_index(device) or 0
+                props = torch.xpu.get_device_properties(device_idx)
+                total = props.total_memory
+                allocated = torch.xpu.memory_allocated(device)
+                return float(total - allocated) / (1024 ** 3)
             except Exception:
-                pass
+                _warn("Cannot query XPU memory (IPEX not available or API mismatch). "
+                      "Falling back to system RAM for memory estimation.")
+                try:
+                    import psutil
+                    return float(psutil.virtual_memory().available) / (1024 ** 3)
+                except Exception:
+                    _warn("psutil is unavailable. Falling back to default memory estimate (4.0 GB).")
+                    return 4.0
 
-        if device.startswith("cpu") or device.startswith("xpu"):
+        if device.startswith("cpu"):
             try:
                 import psutil
                 return float(psutil.virtual_memory().available) / (1024 ** 3)

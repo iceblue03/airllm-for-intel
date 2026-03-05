@@ -179,8 +179,16 @@ class AirLLMBaseModel(GenerationMixin):
             print(f"not support prefetching for compression for now. loading with no prepetching mode.")
 
         # this operation should run only if gpu is available
-        if prefetching and device.startswith("cuda"):
+        if prefetching and device.startswith("cuda") and torch.cuda.is_available():
             self.stream = torch.cuda.Stream()
+        elif prefetching and device.startswith("xpu"):
+            try:
+                import intel_extension_for_pytorch as ipex  # noqa: F401
+                self.stream = torch.xpu.Stream()
+            except Exception:
+                self.stream = None
+                print("[airllm] XPU stream creation failed (IPEX not available?). Prefetching disabled.")
+                self.prefetching = False
         else:
             self.stream = None
 
@@ -295,7 +303,7 @@ class AirLLMBaseModel(GenerationMixin):
 
         t = time.time()
 
-        load_layer_output = load_layer(self.checkpoint_path, layer_name, self.profiling_mode)
+        load_layer_output = load_layer(self.checkpoint_path, layer_name, self.profiling_mode, device=self.running_device)
         elapsed_time = time.time() - t
 
         if self.profiling_mode:
@@ -311,12 +319,16 @@ class AirLLMBaseModel(GenerationMixin):
         # pin memory:
         if self.prefetching:
             t = time.time()
-            if torch.cuda.is_available():  # Check if CUDA is available
+            device = self.running_device
+            if device.startswith("cuda") and torch.cuda.is_available():
                 for k in state_dict.keys():
-                    state_dict[k].pin_memory()
-            else:
-                # For CPU, no action is needed, but you could optionally add a log or message
-                print("Prefetching is enabled, but no pin_memory operation is needed for CPU.")
+                    state_dict[k] = state_dict[k].pin_memory()
+            elif device.startswith("xpu"):
+                try:
+                    for k in state_dict.keys():
+                        state_dict[k] = state_dict[k].pin_memory()
+                except Exception:
+                    pass  # pin_memory not supported on this XPU environment
 
             elapsed_time = time.time() - t
             if self.profiling_mode:
