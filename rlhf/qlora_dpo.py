@@ -12,7 +12,10 @@ from typing import Optional, Dict, Sequence
 import numpy as np
 from tqdm import tqdm
 import logging
-import bitsandbytes as bnb
+try:
+    import bitsandbytes as bnb
+except ImportError:
+    bnb = None
 import pandas as pd
 
 import torch
@@ -43,7 +46,8 @@ from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from typing import Optional, Dict, List, Union, Tuple, Any
 import torch.nn.functional as F
 
-torch.backends.cuda.matmul.allow_tf32 = True
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
 
 
 logging_file_path = f"./qlora_dpo_logs.log"
@@ -236,6 +240,8 @@ class GenerationArguments:
     no_repeat_ngram_size: Optional[int] = field(default=0) 
 
 def find_all_linear_names(args, model):
+    if args.bits in [4, 8] and bnb is None:
+        raise ImportError("bitsandbytes is required for 4-bit/8-bit training.")
     cls = bnb.nn.Linear4bit if args.bits == 4 else (bnb.nn.Linear8bitLt if args.bits == 8 else torch.nn.Linear)
     lora_module_names = set()
     for name, module in model.named_modules():
@@ -268,7 +274,16 @@ class SampleGenerateCallback(transformers.TrainerCallback):
                 logger.info(f"sample input: {inputs}")
                 model = kwargs['model']
                 input_ids = tokenizer(inputs, return_tensors="pt")['input_ids']
-                input_ids = input_ids.to('cuda')
+                try:
+                    target_device = next(model.parameters()).device
+                except Exception:
+                    if torch.cuda.is_available():
+                        target_device = torch.device("cuda")
+                    elif hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
+                        target_device = torch.device("xpu")
+                    else:
+                        target_device = torch.device("cpu")
+                input_ids = input_ids.to(target_device)
                 generation_output = model.generate(
                     input_ids=input_ids,
                     max_new_tokens=370,
@@ -310,11 +325,19 @@ class SavePeftModelCallback(transformers.TrainerCallback):
 
 def get_reference_model(args, checkpoint_dir):
 
-    n_gpus = torch.cuda.device_count()
     max_memory = f'{args.max_memory_MB}MB'
-    max_memory = {i: max_memory for i in range(n_gpus)}
+    if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+        max_memory = {i: max_memory for i in range(n_gpus)}
+    elif hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
+        n_xpus = torch.xpu.device_count()
+        max_memory = {f"xpu:{i}": max_memory for i in range(n_xpus)}
+    else:
+        max_memory = None
 
     if args.full_finetune: assert args.bits in [16, 32]
+    if args.bits in [4, 8] and bnb is None:
+        raise ImportError("bitsandbytes is required for 4-bit/8-bit training.")
 
     logger.info(f'loading reference model {args.reference_model}...')
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
@@ -337,7 +360,7 @@ def get_reference_model(args, checkpoint_dir):
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
     )
-    if compute_dtype == torch.float16 and args.bits == 4:
+    if compute_dtype == torch.float16 and args.bits == 4 and torch.cuda.is_available():
         major, minor = torch.cuda.get_device_capability()
         if major >= 8:
             logger.info('='*80)
@@ -353,11 +376,19 @@ def get_reference_model(args, checkpoint_dir):
 
 def get_accelerate_model(args, checkpoint_dir):
 
-    n_gpus = torch.cuda.device_count()
     max_memory = f'{args.max_memory_MB}MB'
-    max_memory = {i: max_memory for i in range(n_gpus)}
+    if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+        max_memory = {i: max_memory for i in range(n_gpus)}
+    elif hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
+        n_xpus = torch.xpu.device_count()
+        max_memory = {f"xpu:{i}": max_memory for i in range(n_xpus)}
+    else:
+        max_memory = None
 
     if args.full_finetune: assert args.bits in [16, 32]
+    if args.bits in [4, 8] and bnb is None:
+        raise ImportError("bitsandbytes is required for 4-bit/8-bit training.")
 
     logger.info(f'loading base model {args.model_name_or_path}...')
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
@@ -380,7 +411,7 @@ def get_accelerate_model(args, checkpoint_dir):
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
     )
-    if compute_dtype == torch.float16 and args.bits == 4:
+    if compute_dtype == torch.float16 and args.bits == 4 and torch.cuda.is_available():
         major, minor = torch.cuda.get_device_capability()
         if major >= 8:
             logger.info('='*80)

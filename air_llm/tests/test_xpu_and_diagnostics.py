@@ -102,13 +102,11 @@ class TestUncompressLayerStateDict(unittest.TestCase):
         should_raise = (has_4bit or has_8bit) and device.startswith("xpu")
         self.assertFalse(should_raise)
 
-    def test_default_device_is_cuda(self):
-        """Default device parameter should be 'cuda'."""
-        import inspect
-        # Read function source to check default
+    def test_default_device_is_not_forced_cuda(self):
+        """Default device parameter should not be hardcoded to CUDA."""
         with open(_airllm_file("utils.py")) as f:
             content = f.read()
-        self.assertIn('def uncompress_layer_state_dict(layer_state_dict, device: str = "cuda")', content)
+        self.assertIn('def uncompress_layer_state_dict(layer_state_dict, device: Optional[str] = None):', content)
 
     def test_load_layer_passes_device(self):
         """load_layer should accept and pass device parameter."""
@@ -159,14 +157,14 @@ class TestStreamCreation(unittest.TestCase):
     def test_xpu_stream_branch_exists(self):
         with open(_airllm_file("airllm_base.py")) as f:
             content = f.read()
-        self.assertIn('elif prefetching and device.startswith("xpu")', content)
+        self.assertIn('elif self.prefetching and device.startswith("xpu")', content)
         self.assertIn("torch.xpu.Stream()", content)
         self.assertIn("intel_extension_for_pytorch", content)
 
     def test_cuda_stream_checks_availability(self):
         with open(_airllm_file("airllm_base.py")) as f:
             content = f.read()
-        self.assertIn('prefetching and device.startswith("cuda") and torch.cuda.is_available()', content)
+        self.assertIn('self.prefetching and device.startswith("cuda") and torch.cuda.is_available()', content)
 
 
 class TestMemoryUtils(unittest.TestCase):
@@ -540,4 +538,3 @@ class TestDetectDefaultDevice(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -213,9 +213,9 @@ class AirLLMBaseModel(GenerationMixin):
             print(f"not support prefetching for compression for now. loading with no prepetching mode.")
 
         # this operation should run only if gpu is available
-        if prefetching and device.startswith("cuda") and torch.cuda.is_available():
+        if self.prefetching and device.startswith("cuda") and torch.cuda.is_available():
             self.stream = torch.cuda.Stream()
-        elif prefetching and device.startswith("xpu"):
+        elif self.prefetching and device.startswith("xpu"):
             try:
                 import intel_extension_for_pytorch as ipex  # noqa: F401
                 self.stream = torch.xpu.Stream()
@@ -251,7 +251,7 @@ class AirLLMBaseModel(GenerationMixin):
         # Load meta model (no memory used)
         self.model = None
 
-        if self.get_use_better_transformer():
+        if self.get_use_better_transformer() and not self.running_device.startswith("xpu"):
             try:
                 with init_empty_weights():
                     self.model = AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
@@ -261,21 +261,24 @@ class AirLLMBaseModel(GenerationMixin):
                 clean_memory(self.running_device)
                 self.model = None
 
-            if self.model is None:
-                # try way 2.
-                try:
+        if self.model is None:
+            # try way 2.
+            try:
 
-                    print(f"new version of transfomer, no need to use BetterTransformer, try setting attn impl to sdpa...")
-                    self.config.attn_implementation = "sdpa"
+                print(f"new version of transfomer, no need to use BetterTransformer, try setting attn impl to sdpa...")
+                self.config.attn_implementation = "sdpa"
 
-                    with init_empty_weights():
-                        self.model = AutoModelForCausalLM.from_config(self.config, attn_implementation="sdpa", trust_remote_code=True)
-                    print(f"attn imp: {type(self.model.model.layers[3].self_attn)}")
+                with init_empty_weights():
+                    self.model = AutoModelForCausalLM.from_config(self.config, attn_implementation="sdpa", trust_remote_code=True)
+                layers = getattr(getattr(self.model, "model", None), "layers", None)
+                if layers is not None and len(layers) > 0:
+                    attn_layer_idx = min(3, len(layers) - 1)
+                    print(f"attn imp: {type(layers[attn_layer_idx].self_attn)}")
 
-                except TypeError as ve:
-                    del self.model
-                    clean_memory(self.running_device)
-                    self.model = None
+            except TypeError as ve:
+                del self.model
+                clean_memory(self.running_device)
+                self.model = None
 
         # fallback to original way
         if self.model is None:

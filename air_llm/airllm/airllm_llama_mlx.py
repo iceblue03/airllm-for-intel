@@ -207,7 +207,7 @@ class AirLLMLlamaMlx:
 
         print(f"[{msg}] - available mem: {available:.02f}mb, consumed: {consumed:.02f}mb, least available:{available:.02f}mb, max consumed: {max_consumed:.02f}mb")
 
-    def __init__(self, model_local_path_or_repo_id, device="cuda:0", dtype=None, max_seq_len=512,
+    def __init__(self, model_local_path_or_repo_id, device=None, dtype=None, max_seq_len=512,
                  layer_shards_saving_path=None, profiling_mode=False, compression=None,
                  hf_token=None, prefetching=True, test_nonlayered=False, show_memory_util=False,
                  delete_original=False):
