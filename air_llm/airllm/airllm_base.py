@@ -21,6 +21,11 @@ from optimum.bettertransformer import BetterTransformer
 from .utils import clean_memory, load_layer, \
     find_or_create_local_splitted_path
 
+from .memory_utils import (
+    get_available_memory_gb, get_avg_layer_size_gb,
+    calculate_min_required_memory_gb, check_memory_and_confirm,
+)
+
 try:
     import bitsandbytes as bnb
 
@@ -40,6 +45,21 @@ except ImportError:
     cache_utils_installed = False
 
 
+def _detect_default_device() -> str:
+    """Detect the best available compute device: XPU > CUDA > CPU."""
+    try:
+        if hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
+            return "xpu:0"
+    except Exception:
+        pass
+    try:
+        if torch.cuda.is_available():
+            return "cuda:0"
+    except Exception:
+        pass
+    return "cpu"
+
+
 
 
 
@@ -55,7 +75,7 @@ class AirLLMBaseModel(GenerationMixin):
 
 
 
-    def __init__(self, model_local_path_or_repo_id, device="cuda:0", dtype=torch.float16, max_seq_len=512,
+    def __init__(self, model_local_path_or_repo_id, device=None, dtype=torch.float16, max_seq_len=512,
                  layer_shards_saving_path=None, profiling_mode=False, compression=None,
                  hf_token=None, prefetching=True, delete_original=False, num_layers_in_memory=1):
         """
@@ -67,8 +87,9 @@ class AirLLMBaseModel(GenerationMixin):
         ----------
         model_local_path_or_repo_id : str or Path
             path to the local model checkpoint or huggingface repo id
-        device : str, optional
-            device, by default "cuda:0"
+        device : str or None, optional
+            device, e.g. "cuda:0", "xpu:0", "cpu".  Defaults to ``None``
+            which triggers auto-detection (XPU > CUDA > CPU).
         dtype : torch.dtype, optional
             dtype, by default torch.float16
         max_seq_len : int, optional
@@ -84,6 +105,9 @@ class AirLLMBaseModel(GenerationMixin):
         num_layers_in_memory : int or str, optional
             Number of layers to keep in memory at once. Use "auto" for interactive terminal confirmation based on detected memory.
         """
+
+        if device is None:
+            device = _detect_default_device()
 
 
         self.profiling_mode = profiling_mode
@@ -116,9 +140,19 @@ class AirLLMBaseModel(GenerationMixin):
                                                                                          delete_original=delete_original)
         self.running_device = device
 
+        # Memory availability check — warn user before heavy model init
+        _available_gb = get_available_memory_gb(self.running_device)
+        _avg_layer_gb = get_avg_layer_size_gb(str(self.checkpoint_path))
+        _min_required = calculate_min_required_memory_gb(_avg_layer_gb, compression=self.compression)
+        check_memory_and_confirm(
+            _available_gb, _min_required, _avg_layer_gb,
+            compression=self.compression,
+            device=self.running_device,
+        )
+
         if isinstance(num_layers_in_memory, str):
             if num_layers_in_memory == "auto":
-                from .memory_utils import suggest_num_layers, confirm_num_layers, get_available_memory_gb, get_avg_layer_size_gb
+                from .memory_utils import suggest_num_layers, confirm_num_layers
                 available = get_available_memory_gb(device)
                 avg_size = get_avg_layer_size_gb(self.checkpoint_path)
                 suggested = suggest_num_layers(self.checkpoint_path, device)

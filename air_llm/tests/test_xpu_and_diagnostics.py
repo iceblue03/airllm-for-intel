@@ -368,5 +368,176 @@ class TestInitExportsDiagnostics(unittest.TestCase):
         self.assertIn("from .diagnostics import run_diagnostics", content)
 
 
+class TestCalculateMinRequiredMemoryGb(unittest.TestCase):
+    """Test calculate_min_required_memory_gb in memory_utils."""
+
+    def _import_func(self):
+        import ast
+        from typing import Optional
+        with open(_airllm_file("memory_utils.py")) as f:
+            source = f.read()
+        tree = ast.parse(source)
+        func_source = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "calculate_min_required_memory_gb":
+                func_source = ast.get_source_segment(source, node)
+                break
+        self.assertIsNotNone(func_source, "calculate_min_required_memory_gb not found")
+        ns = {"Optional": Optional}
+        exec(func_source, ns)
+        return ns["calculate_min_required_memory_gb"]
+
+    def test_no_compression(self):
+        func = self._import_func()
+        result = func(1.0, compression=None)
+        # 1.0 * 1.5 + 1.5 = 3.0
+        self.assertAlmostEqual(result, 3.0)
+
+    def test_4bit_compression(self):
+        func = self._import_func()
+        result = func(4.0, compression="4bit")
+        # 4.0 * 0.25 * 1.5 + 1.5 = 1.5 + 1.5 = 3.0
+        self.assertAlmostEqual(result, 3.0)
+
+    def test_8bit_compression(self):
+        func = self._import_func()
+        result = func(4.0, compression="8bit")
+        # 4.0 * 0.5 * 1.5 + 1.5 = 3.0 + 1.5 = 4.5
+        self.assertAlmostEqual(result, 4.5)
+
+    def test_function_exists_in_memory_utils(self):
+        with open(_airllm_file("memory_utils.py")) as f:
+            content = f.read()
+        self.assertIn("def calculate_min_required_memory_gb", content)
+        self.assertIn("def check_memory_and_confirm", content)
+
+    def test_return_type_annotation(self):
+        with open(_airllm_file("memory_utils.py")) as f:
+            content = f.read()
+        self.assertIn("calculate_min_required_memory_gb(avg_layer_size_gb: float", content)
+        self.assertIn("-> float", content)
+
+
+class TestCheckMemoryAndConfirm(unittest.TestCase):
+    """Test check_memory_and_confirm in memory_utils."""
+
+    def _import_func(self):
+        """Extract and exec check_memory_and_confirm with mocked torch."""
+        import ast
+        import types as _types
+        from typing import Optional
+        with open(_airllm_file("memory_utils.py")) as f:
+            source = f.read()
+
+        # Mock torch so the module-level `import torch` doesn't fail
+        mock_torch = _types.ModuleType("torch")
+        saved = sys.modules.get("torch")
+        sys.modules["torch"] = mock_torch
+        try:
+            ns = {}
+            exec(compile(source, _airllm_file("memory_utils.py"), "exec"), ns)
+        finally:
+            if saved is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = saved
+        return ns["check_memory_and_confirm"]
+
+    def test_sufficient_memory_returns_true(self):
+        func = self._import_func()
+        result = func(10.0, 5.0, 1.0)
+        self.assertTrue(result)
+
+    def test_sufficient_memory_no_output(self, capsys=None):
+        import io
+        from contextlib import redirect_stdout
+        func = self._import_func()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            result = func(10.0, 5.0, 1.0)
+        self.assertEqual(buf.getvalue(), "")
+        self.assertTrue(result)
+
+    def test_insufficient_memory_non_interactive_proceeds(self):
+        """In non-interactive mode, should print warning and return True."""
+        import io
+        from contextlib import redirect_stdout
+        func = self._import_func()
+        orig_isatty = sys.stdin.isatty
+
+        try:
+            sys.stdin.isatty = lambda: False
+            out = io.StringIO()
+            with redirect_stdout(out):
+                result = func(1.0, 5.0, 2.0, device="xpu:0")
+            self.assertTrue(result)
+            output = out.getvalue()
+            self.assertIn("메모리 경고", output)
+            self.assertIn("xpu:0", output)
+        finally:
+            sys.stdin.isatty = orig_isatty
+
+    def test_compression_shown_in_warning(self):
+        import io
+        from contextlib import redirect_stdout
+        func = self._import_func()
+        orig_isatty = sys.stdin.isatty
+
+        try:
+            sys.stdin.isatty = lambda: False
+            out = io.StringIO()
+            with redirect_stdout(out):
+                func(1.0, 5.0, 2.0, compression="4bit", device="cuda:0")
+            output = out.getvalue()
+            self.assertIn("4bit", output)
+            self.assertIn("메모리 절감", output)
+        finally:
+            sys.stdin.isatty = orig_isatty
+
+    def test_no_compression_no_quantization_line(self):
+        import io
+        from contextlib import redirect_stdout
+        func = self._import_func()
+        orig_isatty = sys.stdin.isatty
+
+        try:
+            sys.stdin.isatty = lambda: False
+            out = io.StringIO()
+            with redirect_stdout(out):
+                func(1.0, 5.0, 2.0, compression=None, device="cpu")
+            output = out.getvalue()
+            self.assertNotIn("양자화", output)
+        finally:
+            sys.stdin.isatty = orig_isatty
+
+
+class TestDetectDefaultDevice(unittest.TestCase):
+    """Test _detect_default_device in airllm_base."""
+
+    def test_function_exists_in_airllm_base(self):
+        with open(_airllm_file("airllm_base.py")) as f:
+            content = f.read()
+        self.assertIn("def _detect_default_device()", content)
+        self.assertIn("xpu:0", content)
+        self.assertIn("cuda:0", content)
+        self.assertIn('"cpu"', content)
+
+    def test_device_default_is_none_in_init(self):
+        """AirLLMBaseModel.__init__ should default device=None."""
+        with open(_airllm_file("airllm_base.py")) as f:
+            content = f.read()
+        self.assertIn('def __init__(self, model_local_path_or_repo_id, device=None,', content)
+        # Old default should be gone
+        self.assertNotIn('device="cuda:0"', content)
+
+    def test_memory_check_call_in_init(self):
+        """Memory check should be called in __init__."""
+        with open(_airllm_file("airllm_base.py")) as f:
+            content = f.read()
+        self.assertIn("check_memory_and_confirm(", content)
+        self.assertIn("calculate_min_required_memory_gb(", content)
+
+
 if __name__ == "__main__":
     unittest.main()
+

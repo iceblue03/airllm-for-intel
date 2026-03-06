@@ -100,6 +100,99 @@ def suggest_num_layers(checkpoint_path: str, device: str, safety_margin_gb: floa
     return max(1, int(usable / avg_size))
 
 
+def calculate_min_required_memory_gb(avg_layer_size_gb: float, compression: Optional[str] = None) -> float:
+    """Calculate minimum required memory (GB) to run the model.
+
+    Parameters
+    ----------
+    avg_layer_size_gb : float
+        Average on-disk size of one layer shard in GB.
+    compression : str or None
+        '4bit', '8bit', or None.
+
+    Returns
+    -------
+    float
+        Estimated minimum GPU/device memory required in GB.
+
+    Notes
+    -----
+    Effective layer size is scaled by quantization:
+    - '4bit'  → × 0.25
+    - '8bit'  → × 0.5
+    - None    → × 1.0
+    Formula: min_required = effective_layer_size × 1.5 + 1.5
+    (1.5× safety factor for double-buffering; +1.5 GB fixed overhead.)
+    """
+    if compression == "4bit":
+        effective = avg_layer_size_gb * 0.25
+    elif compression == "8bit":
+        effective = avg_layer_size_gb * 0.5
+    else:
+        effective = avg_layer_size_gb
+    return effective * 1.5 + 1.5
+
+
+def check_memory_and_confirm(
+    available_gb: float,
+    min_required_gb: float,
+    avg_layer_size_gb: float,
+    compression: Optional[str] = None,
+    device: Optional[str] = None,
+) -> bool:
+    """Warn the user when available memory is below the estimated minimum.
+
+    If memory is sufficient, returns ``True`` immediately (no output).
+    If memory is insufficient, prints a warning box and prompts Y/N.
+    In a non-interactive environment (``sys.stdin.isatty() == False``), the
+    warning is printed but execution continues automatically.
+
+    Parameters
+    ----------
+    available_gb : float
+        Currently available device memory in GB.
+    min_required_gb : float
+        Minimum required memory as returned by
+        :func:`calculate_min_required_memory_gb`.
+    avg_layer_size_gb : float
+        Average layer shard size used to compute the estimate.
+    compression : str or None
+        Quantisation level shown in the warning box.
+    device : str or None
+        Device string shown in the warning box (e.g. ``"xpu:0"``).
+
+    Returns
+    -------
+    bool
+        Always ``True`` (or raises ``SystemExit(0)`` on user refusal).
+    """
+    if available_gb >= min_required_gb:
+        return True
+
+    device_str = device if device is not None else "unknown"
+
+    print("┌──────────────────────────────────────────────────────┐")
+    print("│  ⚠  메모리 경고                                      │")
+    print("├──────────────────────────────────────────────────────┤")
+    print(f"│  사용 가능한 메모리   :  {available_gb:.1f} GB  ({device_str})")
+    print(f"│  모델 실행 권장 최소  :  {min_required_gb:.1f} GB")
+    print(f"│  레이어당 평균 크기   :  {avg_layer_size_gb:.1f} GB")
+    if compression is not None:
+        print(f"│  양자화              :  {compression}  (메모리 절감 반영됨)")
+    print("├──────────────────────────────────────────────────────┤")
+    print("│  메모리 부족 시 추론 중 OOM이 발생할 수 있습니다.     │")
+    print("└──────────────────────────────────────────────────────┘")
+
+    if not sys.stdin.isatty():
+        return True
+
+    answer = input("그래도 계속 진행하시겠습니까? [Y/n]: ").strip().lower()
+    if answer == "n":
+        print("실행을 취소합니다.")
+        raise SystemExit(0)
+    return True
+
+
 def confirm_num_layers(suggested: int, available_gb: float, avg_size_gb: float, safety_margin_gb: float = 2.0) -> int:
     suggested = max(1, int(suggested))
 
