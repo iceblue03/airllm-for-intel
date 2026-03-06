@@ -98,7 +98,20 @@ def clean_memory(device: str = None):
             pass
 
 
-def uncompress_layer_state_dict(layer_state_dict, device: str = "cuda"):
+def _resolve_compression_device(device: Optional[str] = None) -> str:
+    if device is not None:
+        return device
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except (AttributeError, RuntimeError):
+        # Guard mocked/minimal torch builds where CUDA symbols may be unavailable.
+        pass
+    return "cpu"
+
+
+def uncompress_layer_state_dict(layer_state_dict, device: Optional[str] = None):
+    device = _resolve_compression_device(device)
     has_4bit = any('4bit' in k for k in layer_state_dict.keys())
     has_8bit = any('8bit' in k for k in layer_state_dict.keys())
 
@@ -179,19 +192,30 @@ def check_space(checkpoint_path, layer_shards_saving_path=None, compression=None
                                       f"existing space under {checkpoint_path if layer_shards_saving_path is None else layer_shards_saving_path} assuming can reuse: {total_saved_split_files_size_bytes/ 1024 / 1024 / 1024:.02f}GB. "
                                       )
 
-def compress_layer_state_dict(layer_state_dict, compression=None):
+def compress_layer_state_dict(layer_state_dict, compression=None, device: Optional[str] = None):
+    compression_device = _resolve_compression_device(device)
     compressed_layer_state_dict = None
     if compression == '4bit':
+        if not compression_device.startswith("cuda"):
+            raise RuntimeError(
+                "Compression (4bit/8bit) requires CUDA. "
+                "bitsandbytes quantization is not supported on non-CUDA devices."
+            )
         compressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():
-            v_quant, quant_state = bnb.functional.quantize_nf4(v.cuda(), blocksize=64)
+            v_quant, quant_state = bnb.functional.quantize_nf4(v.to(compression_device), blocksize=64)
             compressed_layer_state_dict[k] = v_quant
             for quant_state_k, quant_state_v in save_quant_state_to_dict(quant_state).items():
                 compressed_layer_state_dict[k + ".4bit." + quant_state_k] = quant_state_v
     elif compression == '8bit':
+        if not compression_device.startswith("cuda"):
+            raise RuntimeError(
+                "Compression (4bit/8bit) requires CUDA. "
+                "bitsandbytes quantization is not supported on non-CUDA devices."
+            )
         compressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():
-            v_quant, quant_state = bnb.functional.quantize_blockwise(v.cuda(), blocksize=2048)
+            v_quant, quant_state = bnb.functional.quantize_blockwise(v.to(compression_device), blocksize=2048)
             absmax = quant_state.absmax.clone().contiguous()
             code = quant_state.code.clone().contiguous()
             compressed_layer_state_dict[k] = v_quant
