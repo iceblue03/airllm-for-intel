@@ -1,0 +1,10 @@
+# AirLLM-for-Intel — Full requirements (훈련/연구용, 기존 고정 버전)
+# 주의: Python 3.12에서 wandb==0.15.3 설치 시 pathtools 빌드 실패 가능
+transformers @ git+https://github.com/huggingface/transformers.git
+peft @ git+https://github.com/huggingface/peft.git@v0.3.0
+accelerate @ git+https://github.com/huggingface/accelerate.git@v0.20.3
+einops==0.6.1
+evaluate==0.4.0
+scikit-learn==1.2.2
+sentencepiece==0.1.99
+wandb==0.15.3

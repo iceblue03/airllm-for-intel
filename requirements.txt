@@ -1,9 +1,12 @@
-# Core runtime packages
-transformers
-accelerate
-safetensors
-huggingface_hub
-psutil
-sentencepiece
-einops
+# AirLLM-for-Intel — Lite requirements (추론/진단/Intel XPU용)
+# torch + intel-extension-for-pytorch는 install.sh 또는 아래 명령으로 별도 설치:
+#   pip install torch torchvision torchaudio intel-extension-for-pytorch \
+#     --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+transformers>=4.40.0
+accelerate>=0.26.0
+safetensors>=0.4.3
+huggingface_hub>=0.20.0
+psutil>=5.9.0
+sentencepiece>=0.1.99
+einops>=0.6.1
 bitsandbytes-intel
