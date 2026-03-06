@@ -36,6 +36,16 @@ except ImportError:
 import huggingface_hub
 
 
+def _is_bitsandbytes_intel_available() -> bool:
+    """bitsandbytes-intel 패키지 설치 여부 확인."""
+    try:
+        import importlib.metadata
+        importlib.metadata.version("bitsandbytes-intel")
+        return True
+    except Exception:
+        return False
+
+
 # replacement for bnb quantstat.as_dict(True), until the bug is fixed....
 def save_quant_state_to_dict(self, packed=True):
     """
@@ -115,10 +125,11 @@ def uncompress_layer_state_dict(layer_state_dict, device: Optional[str] = None):
     has_4bit = any('4bit' in k for k in layer_state_dict.keys())
     has_8bit = any('8bit' in k for k in layer_state_dict.keys())
 
-    if (has_4bit or has_8bit) and device.startswith("xpu"):
+    if (has_4bit or has_8bit) and device.startswith("xpu") and not _is_bitsandbytes_intel_available():
         raise RuntimeError(
-            "Compression (4bit/8bit) is not supported on Intel XPU devices. "
-            "bitsandbytes requires CUDA. Use compression=None with XPU devices."
+            "Compression (4bit/8bit) on Intel XPU requires bitsandbytes-intel.\n"
+            "  설치 방법: pip install bitsandbytes-intel\n"
+            "  또는 compression=None으로 설정하세요."
         )
 
     uncompressed_layer_state_dict = None
@@ -196,10 +207,13 @@ def compress_layer_state_dict(layer_state_dict, compression=None, device: Option
     compression_device = _resolve_compression_device(device)
     compressed_layer_state_dict = None
     if compression == '4bit':
-        if not compression_device.startswith("cuda"):
+        is_cuda = compression_device.startswith("cuda")
+        is_xpu_with_intel_bnb = compression_device.startswith("xpu") and _is_bitsandbytes_intel_available()
+        if not (is_cuda or is_xpu_with_intel_bnb):
             raise RuntimeError(
-                "Compression (4bit/8bit) requires CUDA. "
-                "bitsandbytes quantization is not supported on non-CUDA devices."
+                "Compression (4bit/8bit)은 CUDA 또는 bitsandbytes-intel이 설치된 XPU에서만 지원됩니다.\n"
+                "  Intel XPU에서 사용하려면: pip install bitsandbytes-intel\n"
+                "  또는 compression=None으로 설정하세요."
             )
         compressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():
@@ -208,10 +222,13 @@ def compress_layer_state_dict(layer_state_dict, compression=None, device: Option
             for quant_state_k, quant_state_v in save_quant_state_to_dict(quant_state).items():
                 compressed_layer_state_dict[k + ".4bit." + quant_state_k] = quant_state_v
     elif compression == '8bit':
-        if not compression_device.startswith("cuda"):
+        is_cuda = compression_device.startswith("cuda")
+        is_xpu_with_intel_bnb = compression_device.startswith("xpu") and _is_bitsandbytes_intel_available()
+        if not (is_cuda or is_xpu_with_intel_bnb):
             raise RuntimeError(
-                "Compression (4bit/8bit) requires CUDA. "
-                "bitsandbytes quantization is not supported on non-CUDA devices."
+                "Compression (4bit/8bit)은 CUDA 또는 bitsandbytes-intel이 설치된 XPU에서만 지원됩니다.\n"
+                "  Intel XPU에서 사용하려면: pip install bitsandbytes-intel\n"
+                "  또는 compression=None으로 설정하세요."
             )
         compressed_layer_state_dict = {}
         for k, v in layer_state_dict.items():

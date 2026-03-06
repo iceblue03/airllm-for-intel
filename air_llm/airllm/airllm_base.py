@@ -30,7 +30,13 @@ try:
     import bitsandbytes as bnb
 
     bitsandbytes_installed = True
-    print('>>>> bitsandbytes installed')
+    # bitsandbytes-intel 여부 감지해서 표시
+    try:
+        import importlib.metadata
+        _bnb_intel_ver = importlib.metadata.version("bitsandbytes-intel")
+        print(f'>>>> bitsandbytes (bitsandbytes-intel {_bnb_intel_ver}) installed — Intel XPU compression enabled')
+    except Exception:
+        print('>>>> bitsandbytes installed')
 except ImportError:
     bitsandbytes_installed = False
 
