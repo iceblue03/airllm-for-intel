@@ -104,7 +104,8 @@ def _resolve_compression_device(device: Optional[str] = None) -> str:
     try:
         if torch.cuda.is_available():
             return "cuda"
-    except Exception:
+    except (AttributeError, RuntimeError):
+        # Guard mocked/minimal torch builds where CUDA symbols may be unavailable.
         pass
     return "cpu"
 

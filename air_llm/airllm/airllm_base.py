@@ -251,6 +251,7 @@ class AirLLMBaseModel(GenerationMixin):
         # Load meta model (no memory used)
         self.model = None
 
+        # BetterTransformer path is skipped on XPU because it does not provide stable XPU optimization here.
         if self.get_use_better_transformer() and not self.running_device.startswith("xpu"):
             try:
                 with init_empty_weights():
@@ -270,8 +271,10 @@ class AirLLMBaseModel(GenerationMixin):
 
                 with init_empty_weights():
                     self.model = AutoModelForCausalLM.from_config(self.config, attn_implementation="sdpa", trust_remote_code=True)
-                layers = getattr(getattr(self.model, "model", None), "layers", None)
+                model_backbone = getattr(self.model, "model", None)
+                layers = getattr(model_backbone, "layers", None)
                 if layers is not None and len(layers) > 0:
+                    # Keep legacy diagnostics on representative layer 3 when available; clamp for small models.
                     attn_layer_idx = min(3, len(layers) - 1)
                     print(f"attn imp: {type(layers[attn_layer_idx].self_attn)}")
 

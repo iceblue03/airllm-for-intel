@@ -328,7 +328,9 @@ class SampleGenerateCallback(transformers.TrainerCallback):
                 input_ids = tokenizer(inputs, return_tensors="pt")['input_ids']
                 try:
                     target_device = next(model.parameters()).device
-                except Exception:
+                except StopIteration:
+                    target_device = torch.device("cpu")
+                except (AttributeError, RuntimeError, TypeError):
                     if torch.cuda.is_available():
                         target_device = torch.device("cuda")
                     elif hasattr(torch, "xpu") and hasattr(torch.xpu, "is_available") and torch.xpu.is_available():
