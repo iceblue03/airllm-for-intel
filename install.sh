@@ -12,7 +12,38 @@
 #
 # 모델 다운로드는 포함되지 않습니다.
 # 설치 완료 후 sudo reboot 권장.
-set -euo pipefail
+# ─────────────────────────────────────────────────────────────────────────────
+# AI 에이전트 설정
+# ─────────────────────────────────────────────────────────────────────────────
+REPO_DIR_EARLY="$(cd "$(dirname "$0")" && pwd)"
+AGENT_PY="$REPO_DIR_EARLY/air_llm/airllm/agent_repair.py"
+
+run_agent() {
+    local error_msg="$1"
+    local last_cmd="$2"
+    local step_name="$3"
+    local venv_py="${VENV_PYTHON:-}"
+
+    if [ ! -f "$AGENT_PY" ]; then
+        echo "[WARN] agent_repair.py를 찾을 수 없습니다: $AGENT_PY"
+        return 1
+    fi
+
+    if [ -n "$venv_py" ] && [ -f "$venv_py" ]; then
+        "$venv_py" "$AGENT_PY" \
+            --error "$error_msg" \
+            --last-cmd "$last_cmd" \
+            --step "$step_name" \
+            --repo-dir "$REPO_DIR_EARLY" \
+            --venv-python "$venv_py"
+    else
+        python3 "$AGENT_PY" \
+            --error "$error_msg" \
+            --last-cmd "$last_cmd" \
+            --step "$step_name" \
+            --repo-dir "$REPO_DIR_EARLY"
+    fi
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 0: 색상/헬퍼 함수 정의
@@ -34,12 +65,30 @@ step() { echo -e "\n${SEP}\n  $*\n${SEP}"; }
 # Step 1: 시스템 패키지 설치
 # ─────────────────────────────────────────────────────────────────────────────
 step "Step 1: 시스템 패키지 설치"
-sudo apt-get update -y
-sudo apt-get install -y \
+if ! sudo apt-get update -y 2>/tmp/airllm_err.txt; then
+    warn "apt-get update 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" "sudo apt-get update -y" "Step 1: 시스템 패키지 설치" || exit 1
+    if ! sudo apt-get update -y 2>/tmp/airllm_err.txt; then
+        err "AI 수리 후에도 apt-get update 실패"
+    fi
+fi
+if ! sudo apt-get install -y \
   git curl wget gpg software-properties-common \
   build-essential cmake pkg-config \
   python3-venv python3-pip python3-dev \
-  libssl-dev libffi-dev dkms
+  libssl-dev libffi-dev dkms 2>/tmp/airllm_err.txt; then
+    warn "시스템 패키지 설치 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" \
+        "sudo apt-get install -y git curl wget gpg software-properties-common build-essential cmake pkg-config python3-venv python3-pip python3-dev libssl-dev libffi-dev dkms" \
+        "Step 1: 시스템 패키지 설치" || exit 1
+    if ! sudo apt-get install -y \
+      git curl wget gpg software-properties-common \
+      build-essential cmake pkg-config \
+      python3-venv python3-pip python3-dev \
+      libssl-dev libffi-dev dkms 2>/tmp/airllm_err.txt; then
+        err "AI 수리 후에도 시스템 패키지 설치 실패"
+    fi
+fi
 ok "시스템 패키지 설치 완료"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,11 +99,26 @@ INTEL_REPO_LIST="/etc/apt/sources.list.d/intel.gpu.jammy.list"
 if [ -f "$INTEL_REPO_LIST" ]; then
   info "Intel GPU 저장소가 이미 등록되어 있습니다. 건너뜁니다."
 else
-  wget -O- https://repositories.intel.com/graphics/intel-graphics.key \
-    | sudo gpg --dearmor -o /usr/share/keyrings/intel-graphics-archive-keyring.gpg
-  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics-archive-keyring.gpg] https://repositories.intel.com/graphics/ubuntu jammy main" \
-    | sudo tee "$INTEL_REPO_LIST"
-  sudo apt-get update -y
+  if ! { wget -O- https://repositories.intel.com/graphics/intel-graphics.key \
+    2>/tmp/airllm_err.txt \
+    | sudo gpg --dearmor -o /usr/share/keyrings/intel-graphics-archive-keyring.gpg 2>>/tmp/airllm_err.txt; }; then
+    warn "Intel GPG 키 다운로드/등록 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" \
+        "wget -O- https://repositories.intel.com/graphics/intel-graphics.key | sudo gpg --dearmor -o /usr/share/keyrings/intel-graphics-archive-keyring.gpg" \
+        "Step 2: Intel GPU 드라이버 저장소 등록" || exit 1
+  fi
+  if ! echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics-archive-keyring.gpg] https://repositories.intel.com/graphics/ubuntu jammy main" \
+    | sudo tee "$INTEL_REPO_LIST" 2>/tmp/airllm_err.txt; then
+    warn "Intel 저장소 목록 등록 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" \
+        "echo '...' | sudo tee $INTEL_REPO_LIST" \
+        "Step 2: Intel GPU 드라이버 저장소 등록" || exit 1
+  fi
+  if ! sudo apt-get update -y 2>/tmp/airllm_err.txt; then
+    warn "Intel 저장소 추가 후 apt-get update 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" "sudo apt-get update -y" \
+        "Step 2: Intel GPU 드라이버 저장소 등록" || exit 1
+  fi
   ok "Intel GPU 저장소 등록 완료"
 fi
 
@@ -108,7 +172,14 @@ VENV_PIP="$VENV_DIR/bin/pip"
 if [ -d "$VENV_DIR" ]; then
   info "venv가 이미 존재합니다: $VENV_DIR — 건너뜁니다."
 else
-  python3 -m venv "$VENV_DIR"
+  if ! python3 -m venv "$VENV_DIR" 2>/tmp/airllm_err.txt; then
+    warn "venv 생성 실패. AI 수리 모드 시작..."
+    run_agent "$(cat /tmp/airllm_err.txt)" "python3 -m venv $VENV_DIR" \
+        "Step 6: Python 가상환경(venv) 생성" || exit 1
+    if ! python3 -m venv "$VENV_DIR" 2>/tmp/airllm_err.txt; then
+        err "AI 수리 후에도 venv 생성 실패"
+    fi
+  fi
   ok "venv 생성 완료: $VENV_DIR"
 fi
 
@@ -120,21 +191,56 @@ ok "pip/setuptools/wheel 업그레이드 완료"
 # ─────────────────────────────────────────────────────────────────────────────
 step "Step 7: torch + IPEX XPU 빌드 설치"
 info "Intel 인덱스에서 torch/torchvision/torchaudio/intel-extension-for-pytorch 설치 중..."
-"$VENV_PIP" install torch torchvision torchaudio intel-extension-for-pytorch \
-  --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+
+install_torch() {
+    "$VENV_PIP" install torch torchvision torchaudio intel-extension-for-pytorch \
+        --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+}
+
+if ! install_torch 2>/tmp/airllm_err.txt; then
+    warn "torch 설치 실패. AI 수리 모드 시작..."
+    if run_agent "$(cat /tmp/airllm_err.txt)" \
+        "pip install torch torchvision torchaudio intel-extension-for-pytorch --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/" \
+        "Step 7: torch + IPEX XPU 빌드 설치"; then
+        if ! install_torch 2>/tmp/airllm_err.txt; then
+            err "AI 수리 후에도 torch 설치 실패"
+        fi
+    else
+        err "AI 수리 실패"
+    fi
+fi
 
 info "XPU 빌드 여부 확인 중..."
-if "$VENV_PYTHON" -c "import torch; v = torch.__version__; exit(0 if '+xpu' in v else 1)"; then
+if "$VENV_PYTHON" -c "import torch; v = torch.__version__; exit(0 if '+xpu' in v else 1)" 2>/tmp/airllm_err.txt; then
   ok "torch XPU 빌드 확인됨: $("$VENV_PYTHON" -c 'import torch; print(torch.__version__)')"
 else
-  err "XPU 빌드가 아닌 torch가 설치되었습니다. Intel 인덱스 접속을 확인하세요."
+  warn "XPU 빌드가 아닌 torch가 설치되었습니다. AI 수리 모드 시작..."
+  if run_agent "$(cat /tmp/airllm_err.txt)" \
+      "pip install torch torchvision torchaudio intel-extension-for-pytorch --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/" \
+      "Step 7: torch + IPEX XPU 빌드 설치"; then
+      if ! "$VENV_PYTHON" -c "import torch; v = torch.__version__; exit(0 if '+xpu' in v else 1)"; then
+          err "AI 수리 후에도 XPU 빌드 torch가 아닙니다. Intel 인덱스 접속을 확인하세요."
+      fi
+  else
+      err "AI 수리 실패"
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 8: bitsandbytes-intel 설치 + 심볼릭 링크 연결
 # ─────────────────────────────────────────────────────────────────────────────
 step "Step 8: bitsandbytes-intel 설치 + 심볼릭 링크 연결"
-"$VENV_PIP" install bitsandbytes-intel
+if ! "$VENV_PIP" install bitsandbytes-intel 2>/tmp/airllm_err.txt; then
+    warn "bitsandbytes-intel 설치 실패. AI 수리 모드 시작..."
+    if run_agent "$(cat /tmp/airllm_err.txt)" "pip install bitsandbytes-intel" \
+        "Step 8: bitsandbytes-intel 설치 + 심볼릭 링크 연결"; then
+        if ! "$VENV_PIP" install bitsandbytes-intel 2>/tmp/airllm_err.txt; then
+            err "AI 수리 후에도 bitsandbytes-intel 설치 실패"
+        fi
+    else
+        err "AI 수리 실패"
+    fi
+fi
 
 BNB_XPU_SO=$(find "$VENV_DIR" -name "libbitsandbytes_xpu.so" 2>/dev/null | head -1)
 IPEX_LIB_DIR=$(find "$VENV_DIR" -path "*/intel_extension_for_pytorch/lib" -type d 2>/dev/null | head -1)
@@ -150,14 +256,32 @@ fi
 # Step 9: 나머지 Python 패키지 설치
 # ─────────────────────────────────────────────────────────────────────────────
 step "Step 9: 나머지 Python 패키지 설치"
-"$VENV_PIP" install --upgrade \
+if ! "$VENV_PIP" install --upgrade \
   transformers \
   accelerate \
   safetensors \
   "huggingface_hub>=0.20.0" \
   psutil \
   sentencepiece \
-  einops
+  einops 2>/tmp/airllm_err.txt; then
+    warn "Python 패키지 설치 실패. AI 수리 모드 시작..."
+    if run_agent "$(cat /tmp/airllm_err.txt)" \
+        "pip install --upgrade transformers accelerate safetensors huggingface_hub>=0.20.0 psutil sentencepiece einops" \
+        "Step 9: 나머지 Python 패키지 설치"; then
+        if ! "$VENV_PIP" install --upgrade \
+          transformers \
+          accelerate \
+          safetensors \
+          "huggingface_hub>=0.20.0" \
+          psutil \
+          sentencepiece \
+          einops 2>/tmp/airllm_err.txt; then
+            err "AI 수리 후에도 Python 패키지 설치 실패"
+        fi
+    else
+        err "AI 수리 실패"
+    fi
+fi
 ok "Python 패키지 설치 완료"
 
 # ─────────────────────────────────────────────────────────────────────────────
