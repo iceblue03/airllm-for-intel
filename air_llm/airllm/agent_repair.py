@@ -180,7 +180,7 @@ def ensure_package(package_name: str, venv_python: str):
     )
     if check.returncode != 0:
         print(f"[패키지 설치] {package_name} 설치 중...")
-        subprocess.run([python_bin, "-m", "pip", "install", package_name], check=True)
+        subprocess.run([python_bin, "-m", "pip", "install", package_name, "--break-system-packages"], check=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
