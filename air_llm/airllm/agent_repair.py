@@ -169,7 +169,8 @@ def select_backend_and_key():
 # 패키지 자동 설치
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_package(package_name: str, venv_python: str):
-    python_bin = venv_python if venv_python and os.path.isfile(venv_python) else sys.executable
+    using_venv = bool(venv_python and os.path.isfile(venv_python))
+    python_bin = venv_python if using_venv else sys.executable
     # Derive importable module name from the package name
     import_name = re.sub(r"[^a-zA-Z0-9_]", "_", package_name.split("[")[0])
     # Use importlib to check if the package is available (no shell injection risk)
@@ -180,7 +181,12 @@ def ensure_package(package_name: str, venv_python: str):
     )
     if check.returncode != 0:
         print(f"[패키지 설치] {package_name} 설치 중...")
-        subprocess.run([python_bin, "-m", "pip", "install", package_name, "--break-system-packages"], check=True)
+        cmd = [python_bin, "-m", "pip", "install", package_name]
+        # On Ubuntu 24.04+, PEP 668 blocks pip installs into the system Python.
+        # Apply --break-system-packages only when not running inside a venv.
+        if not using_venv:
+            cmd.append("--break-system-packages")
+        subprocess.run(cmd, check=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
